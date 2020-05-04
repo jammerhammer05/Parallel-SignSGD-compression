@@ -12,7 +12,6 @@ from matplotlib import style
 import matplotlib.cm as cm
 import pandas as pd
 import math
-import cv2
 import sys
 import decimal
 from collections import defaultdict
@@ -296,8 +295,7 @@ def predict_logistic_regression_multiclass_one_vs_one(X_test, Theta, unique_labe
     return pred_vec
 
 
-def train(inputs, labels, learningrate=0.1, iteration=200)
-    ul = get_unique_labels(labels)
+def train(ul,inputs, labels, learningrate=0.1, iteration=200):
     model = fit_logistic_regression_multiclass_one_vs_one(ul, inputs, labels, alpha=learningrate, itr=iteration)
     return model
 
@@ -307,14 +305,14 @@ if __name__ == '__main__':
 
     # Note: There are 10 units which present the digits [1-9, 0]
     # (in order) in the output layer.
-    inputs, labels = load_data()
-
+    inputs, labels = load_training_data()
+    ul = get_unique_labels(labels)
     # train_ip, train_lb, test_ip, test_labels = 
 
     # train the model from scratch and predict based on it
-    model = train(inputs, labels, learningrate=0.1, iteration=200)
+    Theta = train(ul,inputs, labels, learningrate=0.1, iteration=200)
 
-    outputs = predict(model, inputs)
+    outputs = predict_logistic_regression_multiclass_one_vs_one(inputs,Theta,ul,threshold=0.5)
 
     acc = accuracy_score(labels, outputs)
 
