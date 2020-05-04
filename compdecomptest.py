@@ -38,15 +38,6 @@ def compress(theta_grad):
 
 	return shape_theta[1], reslist
 
-def ternary (n):
-    if n == 0:
-        return '0'
-    nums = []
-    while n:
-        n, r = divmod(n, 3)
-        nums.append(str(r))
-    return ''.join(reversed(nums))
-
 def decompress(t_c, l):
     
 	t_len = len(t_c)
@@ -83,9 +74,19 @@ def decompress(t_c, l):
 	return resnp
 
 def compare(t1, t2):
-	if(t1 == t2):
-		return True
-	return False
+	shape = t1.shape
+	y = shape[0]
+	
+	while(y > 0):
+		x = shape[1]
+		
+		while(x > 0):
+			if(t1[y-1][x-1] != t2[y-1][x-1]):
+				return False
+			x = x-1
+		y = y - 1
+	
+	return True
 
 t1 = [[-1., -1., -1., -1., -1., 0., -1., -1., -1., -1., -1., -1., -1., -1., -1., -1., -1., -1.,
   -1., -1., -1., -1., -1., -1., -1., -1.],
@@ -102,7 +103,7 @@ print("t1_comp:\n", t1_comp)
 
 t1_d = decompress(t1_comp, l)
 print("the result is :\n",t1_d)
-# if(compare(t1_d, t1)):
-# 	print("YES")
-# else :
-# 	print("NO")
+if(compare(t1_d, t1)):
+	print("YES")
+else :
+	print("NO")
