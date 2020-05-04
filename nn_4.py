@@ -200,9 +200,10 @@ def cost_function(theta1, theta2, theta3, input_layer_size, hidden_layer_1_size,
     # back propagation: calculate gradiants
     time_start = time.time()
     
-    theta1_grad = np.zeros_like(theta1)  # 25x401
-    theta2_grad = np.zeros_like(theta2)  # 10x26 (100X26)
-    theta3_grad = np.zeros_like(theta3)  # 10x10 (10X101)
+    # 400 -> 10
+    theta1_grad = np.zeros_like(theta1)  # 100x401
+    theta2_grad = np.zeros_like(theta2)  # 25x101 
+    theta3_grad = np.zeros_like(theta3)  # 10x26
     
     for index in range(len(inputs)):
         
