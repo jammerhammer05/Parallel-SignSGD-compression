@@ -16,10 +16,19 @@ import os
 import scipy.io as sio
 import time
 from sklearn.metrics import accuracy_score
-from collections import Counter
+
 from mpi4py import MPI
 import datetime
 a=datetime.datetime.now()
+# if os.getenv('MNISTNN_GPU') == 'yes':
+#     Gpu_mode = True
+# else:
+#     Gpu_mode = False
+
+# if os.getenv('MNISTNN_PARALLEL') == 'yes':
+#     Distributed = True
+# else:
+#     Distributed = False
 
 Gpu_mode = False
 Distributed = True
@@ -27,6 +36,7 @@ Distributed = True
 if Gpu_mode is True:
     import theano
     import theano.tensor as T
+
 
 # Init MPI
 comm = MPI.COMM_WORLD
@@ -100,6 +110,90 @@ else:
     def gpu_matrix_dot():
         pass
 
+def compress(theta_grad):
+    
+    shape_theta = theta_grad.shape
+
+    print("shape :", shape_theta)
+    loops = shape_theta[0]
+    itr = shape_theta[1]
+    reslist = []
+    
+    while(loops > 0):
+
+        res = 0
+        itr = shape_theta[1]
+        i = 0
+        while(itr > 0):
+            
+            x = int(theta_grad[loops-1][itr-1])
+            if(x == -1):
+                res =  res + 2 * pow(3,i)
+            elif(x == 0):
+                res =  res 
+            elif(x == 1):
+                res =  res + 1 * pow(3, i)
+            else :
+                print("Error in signSGD compression")
+                exit(0)
+
+            itr = itr - 1
+            i = i + 1
+
+        reslist.append(res)
+        loops = loops - 1
+
+    return shape_theta[1], reslist
+
+def decompress(t_c, l):
+    
+    t_len = len(t_c)
+    reslist = []
+    i = 0
+
+    while (i < t_len):
+
+        res = []
+        t = t_c[i]
+
+        while t:
+            t, r = divmod(t, 3)
+            if(r == 2):
+                res.append(-1)
+            else:
+                res.append(r)
+
+        lenlist = len(res)
+
+        if(lenlist != l):
+            dif = l - lenlist
+            while dif:
+                res.append(0)
+                dif = dif-1
+
+        res.reverse()
+        i = i+1
+        reslist.append(res)
+
+    reslist.reverse()
+    resnp = np.array(reslist)
+    return resnp
+
+def compare(t1, t2):
+    shape = t1.shape
+    y = shape[0]
+    
+    while(y > 0):
+        x = shape[1]
+        
+        while(x > 0):
+            if(t1[y-1][x-1] != t2[y-1][x-1]):
+                return False
+            x = x-1
+        y = y - 1
+    
+    return True
+
 
 def cost_function(theta1, theta2, input_layer_size, hidden_layer_size, output_layer_size, inputs, labels, regular=0):
     '''
@@ -145,7 +239,6 @@ def cost_function(theta1, theta2, input_layer_size, hidden_layer_size, output_la
     time_start = time.time()
     theta1_grad = np.zeros_like(theta1)  # 25x401
     theta2_grad = np.zeros_like(theta2)  # 10x26
-    
     for index in range(len(inputs)):
         # transform label y[i] from a number to a vector.
         outputs = np.zeros((1, output_layer_size))  # (1,10)
@@ -168,40 +261,51 @@ def cost_function(theta1, theta2, input_layer_size, hidden_layer_size, output_la
         theta1_grad += Matrix_dot(delta2, input_layer[index:index+1])
         # (10,26) = (10,1) x (1,26)
         theta2_grad += Matrix_dot(delta3, hidden_layer[index:index+1])
+    
     theta1_grad /= len(inputs)
     theta2_grad /= len(inputs)
-    c=0
-    for j in theta1_grad:
-    	for i in range(len(j)):
-    		if(theta1_grad[c][i]<0):
-    			theta1_grad[c][i]=-1
-    		else:
-    			theta1_grad[c][i]=1
-    	c=c+1
-    c=0
-    for j in theta2_grad:
-    	for i in range(len(j)):
-    		if(theta2_grad[c][i]<0):
-    			theta2_grad[c][i]=-1
-    		else:
-    			theta2_grad[c][i]=1
-    	c=c+1	
+    
+    theta1_grad=np.sign(theta1_grad)
+    theta2_grad=np.sign(theta2_grad)
+    
+    # print("theta grad 1 :")
+    # print((theta1_grad[0]))
+
+    # print("theta grad 2 :")
+    # print((theta2_grad[0]))
+
+    l1, theta1_grad_cmp = compress(theta1_grad)
+    l2, theta2_grad_cmp = compress(theta2_grad)
+
+    # print("theta1_grad_cmp", theta1_grad_cmp)
+    # print(" ")
+    # print("theta2_grad_cmp", theta1_grad_cmp)
+
+    theta1_grad_d = decompress(theta1_grad_cmp, l1)
+    theta2_grad_d = decompress(theta2_grad_cmp, l2)
+
+    comp1 = compare(theta1_grad_d, theta1_grad)
+    comp2 = compare(theta2_grad_d, theta2_grad)
+
+    if(comp1):
+        print("gradients 1 compressed and decompressed correctly")
+
+    if(comp2):
+        print("gradients 2 compressed and decompressed correctly")
 
     time_end = time.time()
     if comm.rank == 0:
         print('\tback prop: costs {} secs'.format(time_end - time_start))
 
-    return cost, (theta1_grad, theta2_grad)
+    # return cost, (theta1_grad, theta2_grad)
+    return cost, (theta1_grad_cmp, l1, theta2_grad_cmp, l2)
 
 
 def gradient_descent(inputs, labels, learningrate=0.8, iteration=50):
     '''
     @return cost and trained model (weights).
     '''
-
-    # initialization of weights
     if Distributed is True:
-        
         if comm.rank == 0:
             theta1 = rand_init_weights(Input_layer_size, Hidden_layer_size)
             theta2 = rand_init_weights(Hidden_layer_size, Output_layer_size)
@@ -209,30 +313,21 @@ def gradient_descent(inputs, labels, learningrate=0.8, iteration=50):
             theta1 = np.zeros((Hidden_layer_size, Input_layer_size + 1))
             theta2 = np.zeros((Output_layer_size, Hidden_layer_size + 1))
         comm.Barrier()
-        
         if comm.rank == 0:
             time_bcast_start = time.time()
-        
         comm.Bcast([theta1, MPI.DOUBLE])
         comm.Barrier()
         comm.Bcast([theta2, MPI.DOUBLE])
-        
         if comm.rank == 0:
             time_bcast_end = time.time()
             print('\tBcast theta1 and theta2 uses {} secs.'.format(time_bcast_end - time_bcast_start))
-    
-    # else:
-    #     theta1 = rand_init_weights(Input_layer_size, Hidden_layer_size)
-    #     theta2 = rand_init_weights(Hidden_layer_size, Output_layer_size)
-        
-        # distributed is always true so above wont be useful
+    else:
+        theta1 = rand_init_weights(Input_layer_size, Hidden_layer_size)
+        theta2 = rand_init_weights(Hidden_layer_size, Output_layer_size)
 
     cost = 0.0
-    
-    # now the weights are initialized, start the iterations
     for i in range(iteration):
         time_iter_start = time.time()
-
 
         if Distributed is True:
             # Scatter training data and labels.
@@ -242,16 +337,14 @@ def gradient_descent(inputs, labels, learningrate=0.8, iteration=50):
             labels_buf = np.zeros((len(labels)//comm.size), dtype='uint8')
 
             comm.Barrier()
-
             if comm.rank == 0:
                 time_scatter_start = time.time()
-            
             comm.Scatter(sliced_inputs, inputs_buf)
             if comm.rank == 0:
                 time_scatter_end = time.time()
                 print('\tScatter inputs uses {} secs.'.format(time_scatter_end - time_scatter_start))
-            comm.Barrier()
 
+            comm.Barrier()
             if comm.rank == 0:
                 time_scatter_start = time.time()
             comm.Scatter(sliced_labels, labels_buf)
@@ -259,23 +352,18 @@ def gradient_descent(inputs, labels, learningrate=0.8, iteration=50):
                 time_scatter_end = time.time()
                 print('\tScatter labels uses {} secs.'.format(time_scatter_end - time_scatter_start))
 
-
-            # done scattering ip data and labels
-
-
             # Calculate distributed costs and gradients of this iteration
             # by cost function.
             comm.Barrier()
-
-
-            cost, (theta1_grad, theta2_grad) = cost_function(theta1, theta2,
+            # cost, (theta1_grad, theta2_grad) = cost_function(theta1, theta2,
+            cost, (theta1_grad_c, l1, theta2_grad_c, l2) = cost_function(theta1, theta2,
                 Input_layer_size, Hidden_layer_size, Output_layer_size,
                 inputs_buf, labels_buf, regular=0)
 
+            theta1_grad = decompress(theta1_grad_c, l1)
+            theta2_grad = decompress(theta2_grad_c, l2)
             # Gather distributed costs and gradients.
             comm.Barrier()
-
-
             cost_buf = [0] * comm.size
             try:
                 cost_buf = comm.gather(cost)
@@ -283,30 +371,19 @@ def gradient_descent(inputs, labels, learningrate=0.8, iteration=50):
             except TypeError as e:
                 print('[{0}] {1}'.format(comm.rank, e))
 
-           
             theta1_grad_buf = np.asarray([np.zeros_like(theta1_grad)] * comm.size)
             comm.Barrier()
-
-
             if comm.rank == 0:
                 time_gather_start = time.time()
             comm.Gather(theta1_grad, theta1_grad_buf)
-            
             if comm.rank == 0:
                 time_gather_end = time.time()
                 print('\tGather theta1 uses {} secs.'.format(time_gather_end - time_gather_start))
             comm.Barrier()
-
-            #print(theta1_grad.size)
-            #print(theta1_grad_buf.size)
-            count = Counter(theta1_grad.flatten())
-            count = count.most_common(1)
-            theta1_grad.fill(count[0][0])
-            #theta1_grad = functools.reduce(np.add, theta1_grad_buf) / comm.size
+            theta1_grad = functools.reduce(np.add, theta1_grad_buf) / comm.size
 
             theta2_grad_buf = np.asarray([np.zeros_like(theta2_grad)] * comm.size)
             comm.Barrier()
-
             if comm.rank == 0:
                 time_gather_start = time.time()
             comm.Gather(theta2_grad, theta2_grad_buf)
@@ -314,19 +391,15 @@ def gradient_descent(inputs, labels, learningrate=0.8, iteration=50):
                 time_gather_end = time.time()
                 print('\tGather theta2 uses {} secs.'.format(time_gather_end - time_gather_start))
             comm.Barrier()
+            theta2_grad = functools.reduce(np.add, theta2_grad_buf) / comm.size
+        else:
+            # cost, (theta1_grad, theta2_grad) = cost_function(theta1, theta2,
+            cost, (theta1_grad_c, l1, theta2_grad_c, l2) = cost_function(theta1, theta2,
+                Input_layer_size, Hidden_layer_size, Output_layer_size,
+                inputs_buf, labels_buf, regular=0)
 
-            #theta2_grad = functools.reduce(np.add, theta2_grad_buf) / comm.size
-
-            count = Counter(theta2_grad.flatten())
-            count = count.most_common(1)
-            theta2_grad.fill(count[0][0])
-
-        # else:
-        #     cost, (theta1_grad, theta2_grad) = cost_function(theta1, theta2,
-        #         Input_layer_size, Hidden_layer_size, Output_layer_size,
-        #         inputs, labels, regular=0)
-
-            # as distributed is always true above wont be executed
+            theta1_grad = decompress(theta1_grad_c, l1)
+            theta2_grad = decompress(theta2_grad_c, l2)
 
         theta1 -= learningrate * theta1_grad
         theta2 -= learningrate * theta2_grad
@@ -379,7 +452,7 @@ if __name__ == '__main__':
     inputs, labels = load_training_data()
 
     # train the model from scratch and predict based on it
-    model = train(inputs, labels, learningrate=0.1, iteration=10)
+    model = train(inputs, labels, learningrate=0.1, iteration=200)
 
     outputs = predict(model, inputs)
 
