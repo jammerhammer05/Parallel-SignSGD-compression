@@ -7,13 +7,13 @@ import os
 import scipy.io as sio
 import time
 from sklearn.metrics import accuracy_score
-
+from sklearn.model_selection import train_test_split
 from mpi4py import MPI
 import datetime
 a=datetime.datetime.now()
 
-Gpu_mode = False
-Distributed = False
+Gpu_mode = True
+Distributed = True
 
 # Init MPI
 comm = MPI.COMM_WORLD
@@ -36,18 +36,27 @@ def convert_memory_ordering_f2c(array):
 
 
 def load_training_data(training_file='mnistdata.mat'):
-    '''Load training data (mnistdata.mat) and return (inputs, labels).
-    inputs: numpy array with size (5000, 400).
-    labels: numpy array with size (5000, 1).
-    The training data is from Andrew Ng's exercise of the Coursera
-    machine learning course (ex4data1.mat).
-    '''
     training_data = sio.loadmat(training_file)
     inputs = training_data['X'].astype('f8')
     inputs = convert_memory_ordering_f2c(inputs)
     labels = training_data['y'].reshape(training_data['y'].shape[0])
     labels = convert_memory_ordering_f2c(labels)
     return (inputs, labels)
+
+def load_test_train_data(training_file='mnistdata.mat'):
+    training_data = sio.loadmat(training_file)
+
+
+    inputs = training_data['X'].astype('f8')   
+    labels = training_data['y'].reshape(training_data['y'].shape[0])
+
+    xtrain, xtest, ytrain, ytest = train_test_split(inputs, labels, test_size=0.1)
+
+    xtrain = convert_memory_ordering_f2c(xtrain)
+    xtest = convert_memory_ordering_f2c(xtest)
+    ytrain = convert_memory_ordering_f2c(ytrain)
+    ytest = convert_memory_ordering_f2c(ytest)
+    return (xtrain, xtest, ytrain, ytest)
 
 def rand_init_weights(size_in, size_out):
     epsilon_init = 0.12
@@ -64,7 +73,7 @@ def compress(theta_grad):
     
     shape_theta = theta_grad.shape
 
-    print("shape :", shape_theta)
+    # print("shape :", shape_theta)
     loops = shape_theta[0]
     itr = shape_theta[1]
     reslist = []
@@ -175,7 +184,7 @@ def cost_function(theta1, theta2, theta3, input_layer_size, hidden_layer_1_size,
 
 
     time_start = time.time()
-    output_layer = Matrix_dot(hidden_layer_2, theta2.T)  # 5000x10
+    output_layer = Matrix_dot(hidden_layer_2, theta3.T)  # 5000x10
     output_layer = sigmoid(output_layer)
     time_end = time.time()
     if comm.rank == 0:
@@ -215,14 +224,20 @@ def cost_function(theta1, theta2, theta3, input_layer_size, hidden_layer_1_size,
         delta4 = (output_layer[index] - outputs).T  # (10,1)
 
         # calculate delta3
-        # ?????
+        z3 = Matrix_dot(theta2, hidden_layer_1[index:index+1].T)  # (25,101) x (101,1)
+        z3 = np.insert(z3, 0, 1, axis=0)  # add bias, (26,1)
+        delta3 = np.multiply(
+            Matrix_dot(theta3.T, delta4),  # (26,10) x (10,1)
+            sigmoid_gradient(z3)  # (26,1)
+        )
+        delta3 = delta3[1:] 
         # delta3 =  delta3[1:] # (25,1)
 
         # calculate delta2
-        z2 = Matrix_dot(theta1, input_layer[index:index+1].T)  # (25,401) x (401,1)
+        z2 = Matrix_dot(theta1, input_layer[index:index+1].T)  # (100,401) x (401,1)
         z2 = np.insert(z2, 0, 1, axis=0)  # add bias, (101,1)
         delta2 = np.multiply(
-            Matrix_dot(theta2.T, delta3),  # (101,10) x (10,1)
+            Matrix_dot(theta2.T, delta3),  # (101,25) x (25,1)
             sigmoid_gradient(z2)  # (101,1)
         )
         delta2 = delta2[1:]  # (100,1) removing the bias part
@@ -254,9 +269,9 @@ def cost_function(theta1, theta2, theta3, input_layer_size, hidden_layer_1_size,
     # theta2_grad_d = decompress(theta2_grad_cmp, l2)
     # theta3_grad_d = decompress(theta3_grad_cmp, l3)
 
-    comp1 = compare(theta1_grad_d, theta1_grad)
-    comp2 = compare(theta2_grad_d, theta2_grad)
-    comp3 = compare(theta3_grad_d, theta3_grad)
+    #comp1 = compare(theta1_grad_d, theta1_grad)
+    #comp2 = compare(theta2_grad_d, theta2_grad)
+    #comp3 = compare(theta3_grad_d, theta3_grad)
 
     # if(comp1):
     #     print("gradients 1 compressed and decompressed correctly")
@@ -336,7 +351,7 @@ def gradient_descent(inputs, labels, learningrate=0.8, iteration=50):
             # by cost function.
             comm.Barrier()
             # cost, (theta1_grad, theta2_grad) = cost_function(theta1, theta2,
-            cost, (theta1_grad_c, l1, theta2_grad_c, l2, theta3_grad_c, l3) = cost_function(theta1, theta2, theta3
+            cost, (theta1_grad_c, l1, theta2_grad_c, l2, theta3_grad_c, l3) = cost_function(theta1, theta2, theta3,
                 Input_layer_size, hidden_layer_1_size, Output_layer_size,
                 inputs_buf, labels_buf, regular=0)
 
@@ -388,7 +403,7 @@ def gradient_descent(inputs, labels, learningrate=0.8, iteration=50):
 
         else:
 
-            cost, (theta1_grad_c, l1, theta2_grad_c, l2, theta3_grad_c, l3) = cost_function(theta1, theta2, theta3
+            cost, (theta1_grad_c, l1, theta2_grad_c, l2, theta3_grad_c, l3) = cost_function(theta1, theta2, theta3,
                 Input_layer_size, hidden_layer_1_size, Output_layer_size,
                 inputs_buf, labels_buf, regular=0)
 
@@ -440,22 +455,16 @@ if __name__ == '__main__':
 
     # Note: There are 10 units which present the digits [1-9, 0]
     # (in order) in the output layer.
-    inputs, labels = load_training_data()
+    xtrain, xtest, ytrain, ytest = load_test_train_data()
 
     # train the model from scratch and predict based on it
-    model = train(inputs, labels, learningrate=0.1, iteration=200)
+    model = train(xtrain, ytrain, learningrate=0.05, iteration=100)
 
-    outputs = predict(model, inputs)
+    outputs = predict(model, xtest)
 
-    acc = accuracy_score(labels, outputs)
+    acc = accuracy_score(ytest, outputs)
 
-    correct_prediction = 0
-    for i, predict in enumerate(outputs):
-        if predict == labels[i]:
-            correct_prediction += 1
-    precision = float(correct_prediction) / len(labels)
     print('accuracy: ',acc)
-    print('precision: {}'.format(precision))
 
 time = datetime.datetime.now()-a
 print("EXECUTION_TIME:",time)
