@@ -211,23 +211,32 @@ def cost_function(theta1, theta2, theta3, input_layer_size, hidden_layer_1_size,
         outputs = np.zeros((1, output_layer_size))  # (1,10)
         outputs[0][labels[index]-1] = 1
 
+        # calculate delta4
+        delta4 = (output_layer[index] - outputs).T  # (10,1)
+
         # calculate delta3
-        delta3 = (output_layer[index] - outputs).T  # (10,1)
+        # ?????
+        # delta3 =  delta3[1:] # (25,1)
 
         # calculate delta2
         z2 = Matrix_dot(theta1, input_layer[index:index+1].T)  # (25,401) x (401,1)
-        z2 = np.insert(z2, 0, 1, axis=0)  # add bias, (26,1)
+        z2 = np.insert(z2, 0, 1, axis=0)  # add bias, (101,1)
         delta2 = np.multiply(
-            Matrix_dot(theta2.T, delta3),  # (26,10) x (10,1)
-            sigmoid_gradient(z2)  # (26,1)
+            Matrix_dot(theta2.T, delta3),  # (101,10) x (10,1)
+            sigmoid_gradient(z2)  # (101,1)
         )
-        delta2 = delta2[1:]  # (25,1)
+        delta2 = delta2[1:]  # (100,1) removing the bias part
 
-        # calculate gradients of theta1 and theta2
-        # (25,401) = (25,1) x (1,401)
+        # calculate gradients of theta1 and theta2 and theta3
+        
+        # (100,401) = (100,1) x (1,401)
         theta1_grad += Matrix_dot(delta2, input_layer[index:index+1])
-        # (10,26) = (10,1) x (1,26)
+        # (25,101) = (25,1) x (1,101)
         theta2_grad += Matrix_dot(delta3, hidden_layer_1[index:index+1])
+        # (10,26) = (10,1) x (1,26)
+        theta3_grad += Matrix_dot(delta4, hidden_layer_2[index:index+1])
+
+        
     
     theta1_grad /= len(inputs)
     theta2_grad /= len(inputs)
@@ -284,10 +293,12 @@ def gradient_descent(inputs, labels, learningrate=0.8, iteration=50):
         comm.Bcast([theta1, MPI.DOUBLE])
         comm.Barrier()
         comm.Bcast([theta2, MPI.DOUBLE])
+        comm.Barrier()
+        comm.Bcast([theta3, MPI.DOUBLE])
         
         if comm.rank == 0:
             time_bcast_end = time.time()
-            print('\tBcast theta1 and theta2 uses {} secs.'.format(time_bcast_end - time_bcast_start))
+            print('\tBcast theta1, theta2 and theta3 uses {} secs.'.format(time_bcast_end - time_bcast_start))
     else:
         
         theta1 = rand_init_weights(Input_layer_size, hidden_layer_1_size)
@@ -376,7 +387,7 @@ def gradient_descent(inputs, labels, learningrate=0.8, iteration=50):
             theta3_grad = functools.reduce(np.add, theta3_grad_buf) / comm.size
 
         else:
-            # cost, (theta1_grad, theta2_grad) = cost_function(theta1, theta2,
+
             cost, (theta1_grad_c, l1, theta2_grad_c, l2, theta3_grad_c, l3) = cost_function(theta1, theta2, theta3
                 Input_layer_size, hidden_layer_1_size, Output_layer_size,
                 inputs_buf, labels_buf, regular=0)
