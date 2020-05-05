@@ -27,15 +27,13 @@ from mpi4py import MPI
 import datetime
 a=datetime.datetime.now()
 
-Gpu_mode = False
-Distributed = False
 
 # Init MPI
 comm = MPI.COMM_WORLD
 
 Matrix_dot = np.dot
 
-
+Input_layer_size=400
 def convert_memory_ordering_f2c(array):
     if np.isfortran(array) is True:
         return np.ascontiguousarray(array)
@@ -56,6 +54,22 @@ def load_training_data(training_file='mnistdata.mat'):
     labels = training_data['y'].reshape(training_data['y'].shape[0])
     labels = convert_memory_ordering_f2c(labels)
     return (inputs, labels)
+
+
+def load_test_train_data(training_file='mnistdata.mat'):
+    training_data = sio.loadmat(training_file)
+
+
+    inputs = training_data['X'].astype('f8')   
+    labels = training_data['y'].reshape(training_data['y'].shape[0])
+
+    xtrain, xtest, ytrain, ytest = train_test_split(inputs, labels, test_size=0.1)
+
+    # xtrain = convert_memory_ordering_f2c(xtrain)
+    # xtest = convert_memory_ordering_f2c(xtest)
+    # ytrain = convert_memory_ordering_f2c(ytrain)
+    # ytest = convert_memory_ordering_f2c(ytest)
+    return (xtrain, xtest, ytrain, ytest)
 
 def rand_init_weights(size_in, size_out):
     epsilon_init = 0.12
@@ -172,62 +186,98 @@ def get_J_dash_theta(X, Theta, alpha, Y_actual, threshold):
 
     J_dash_theta=np.sign(J_dash_theta)
     l1, J_dash_theta_cmp = compress(J_dash_theta)
-    return J_dash_theta_cmp
+    return l1,J_dash_theta_cmp
     
 
-def perform_gradient_descent(X, Theta, alpha, Y_actual, itr, threshold):
+def perform_gradient_descent(X, Theta, alpha, Y, itr, threshold):
     
     iterations = itr
-    m = X.shape[0]
+    m = len(X)
+
+    if comm.rank == 0:
+        theta = Theta
+    else:
+        theta = np.zeros_like(Theta)
+
+    comm.Barrier()
+    
+    if comm.rank == 0:
+        time_bcast_start = time.time()
+    comm.Bcast([theta, MPI.DOUBLE])
+    comm.Barrier()
+    
+    if comm.rank == 0:
+        time_bcast_end = time.time()
+        print('\tBcast theta uses {} secs.'.format(time_bcast_end - time_bcast_start))
+
+    X = np.array(X)
+    Y = np.array(Y)
+
+    inputs = X.astype('uint8')
+    labels = Y.astype('uint8')
+
+    inputs = convert_memory_ordering_f2c(inputs)
+    labels = convert_memory_ordering_f2c(labels)
                     
     for i in range(iterations):
-        if Distributed is True:
-            sliced_inputs = np.asarray(np.split(X, comm.size))
-            sliced_labels = np.asarray(np.split(Y_actual, comm.size))
-            inputs_buf = np.zeros((len(inputs)//comm.size), dtype='uint8')
-            labels_buf = np.zeros((len(labels)//comm.size), dtype='uint8')
 
-            comm.Barrier()
-            if comm.rank == 0:
-                time_scatter_start = time.time()
-            comm.Scatter(sliced_inputs, inputs_buf)
-            if comm.rank == 0:
-                time_scatter_end = time.time()
-                print('\tScatter inputs uses {} secs.'.format(time_scatter_end - time_scatter_start))
+        time_iter_start = time.time()
+        sliced_inputs = np.asarray(np.split(inputs, comm.size))
+        sliced_labels = np.asarray(np.split(labels, comm.size))
+        inputs_buf = np.zeros((len(inputs)//comm.size, Input_layer_size))
+        labels_buf = np.zeros((len(labels)//comm.size), dtype='uint8')
+        # inputs_buf = bytearray(1<<24)
+        # labels_buf = bytearray(1<<24)
 
-            comm.Barrier()
-            if comm.rank == 0:
-                time_scatter_start = time.time()
-            comm.Scatter(sliced_labels, labels_buf)
-            if comm.rank == 0:
-                time_scatter_end = time.time()
-                print('\tScatter labels uses {} secs.'.format(time_scatter_end - time_scatter_start))
+        comm.Barrier()
+        if comm.rank == 0:
+            time_scatter_start = time.time()
+        comm.Scatter(sliced_inputs, inputs_buf)
+        if comm.rank == 0:
+            time_scatter_end = time.time()
+            print('\tScatter inputs uses {} secs.'.format(time_scatter_end - time_scatter_start))
 
-            # Calculate distributed costs and gradients of this iteration
-            # by cost function.
-            comm.Barrier()
-            cost, (J_dash_theta_c) = get_J_dash_theta(inputs_buf,Theta,alpha,labels_buf,threshold)
-            J_dash_theta_grad = decompress(theta1_grad_c, l1)
-            comm.Barrier()
-            J_dash_theta_buf = np.asarray([np.zeros_like(J_dash_theta_grad)] * comm.size)
-            comm.Barrier()
-            if comm.rank == 0:
-                time_gather_start = time.time()
-            comm.Gather(J_dash_theta_grad, J_dash_theta_buf)
-            if comm.rank == 0:
-                time_gather_end = time.time()
-                print('\tGather theta1 uses {} secs.'.format(time_gather_end - time_gather_start))
-            comm.Barrier()
-            J_dash_theta_grad = functools.reduce(np.add, J_dash_theta_buf) / comm.size
+        comm.Barrier()
+        if comm.rank == 0:
+            time_scatter_start = time.time()
+        comm.Scatter(sliced_labels, labels_buf)
+        if comm.rank == 0:
+            time_scatter_end = time.time()
+            print('\tScatter labels uses {} secs.'.format(time_scatter_end - time_scatter_start))
 
-        diff = J_dash_theta*(alpha/m)
+        # Calculate distributed costs and gradients of this iteration
+        # by cost function.
+        comm.Barrier()
+
+        l1,J_dash_theta_c = get_J_dash_theta(inputs_buf,Theta,alpha,labels_buf,threshold)
+        J_dash_theta_grad = decompress(J_dash_theta_c, l1)
+        comm.Barrier()
+        
+        J_dash_theta_buf = np.asarray([np.zeros_like(J_dash_theta_grad)] * comm.size)
+        comm.Barrier()
+        if comm.rank == 0:
+            time_gather_start = time.time()
+        comm.Gather(J_dash_theta_grad, J_dash_theta_buf)
+        if comm.rank == 0:
+            time_gather_end = time.time()
+            print('\tGather theta uses {} secs.'.format(time_gather_end - time_gather_start))
+        comm.Barrier()
+        J_dash_theta_grad = functools.reduce(np.add, J_dash_theta_buf) / comm.size
+
+        diff = J_dash_theta_grad*(alpha/m)
         Theta = np.add(Theta, diff)
-
+        comm.Bcast([Theta, MPI.DOUBLE])
+        time_iter_end = time.time()
+        if comm.rank == 0:
+            print('Iteration {0} (learning rate {1}, iteration {2}), time: {3}'.format(
+                i+1, alpha, iterations, time_iter_end - time_iter_start)
+            )
         #J_dash_theta = get_J_dash_theta(X, Theta, alpha, Y_actual, threshold)
         #diff = J_dash_theta*(alpha/m)
         #Theta = np.add(Theta, diff)
         
     return Theta
+
 
 def fit_logistic_regression_multiclass_one_vs_one(unique_labels, X, Y_label, alpha=0.01, threshold=0.5, itr=1000):
     
@@ -235,34 +285,40 @@ def fit_logistic_regression_multiclass_one_vs_one(unique_labels, X, Y_label, alp
     # created a map for storing all the respective theta values
     num_of_classes = len(unique_labels)
     Theta = {}
-    if Distributed is True:
-        for idx in range(0, num_of_classes):
-            for jdx in range(idx+1, num_of_classes):
-                if comm.rank == 0:
-                    i = unique_labels[idx]
-                    j = unique_labels[jdx]
-                    X_train_ij = []
-                    Y_train_actual_ij = []
+    
+    for idx in range(0, num_of_classes):
+        for jdx in range(idx+1, num_of_classes):
+            
+            i = unique_labels[idx]
+            j = unique_labels[jdx]
+            
+            X_train_ij = []
+            Y_train_actual_ij = []
+            
+            # seperate out the data according to the label
+            
+            for k in range(len(Y_label)):
+                if(Y_label[k] == i or Y_label[k] == j):
+                
+                    X_train_ij.append(X[k]) 
+                    Y_train_actual_ij.append(Y_label[k])
                     
-                    for k in range(len(Y_label)):
-                        if(Y_label[k] == i or Y_label[k] == j):
-                            X_train_ij.append(X[k]) 
-                            Y_train_actual_ij.append(Y_label[k])
-                    
-                    X_train_ij = np.array(X_train_ij)
-                    Y_train_actual_ij = np.array(Y_train_actual_ij)
-                    # done picking out data for the required labels i and j
-                    #  Now take i as the positive label and put it as "1" and j becomes "0"       
-                    Y_train_actual_ij = (Y_train_actual_ij == i).astype(int)
-                    # pick random values initially for Theta
-                comm.Barrier()
-                if comm.rank == 0:
-                    dim = X_train_ij.shape[1]
-                    theta_init_ij = np.random.rand(1,dim)
-                comm.Bcast([theta_init_ij, MPI.DOUBLE])
-                comm.Barrier()
-                theta_ij = perform_gradient_descent(X_train_ij, theta_init_ij, alpha, Y_train_actual_ij, itr, threshold)
-                Theta[(i,j)] = theta_ij
+            X_train_ij = np.array(X_train_ij)
+            Y_train_actual_ij = np.array(Y_train_actual_ij)
+
+            # done picking out data for the required labels i and j
+
+            #  Now take i as the positive label and put it as "1" and j becomes "0"       
+
+            Y_train_actual_ij = (Y_train_actual_ij == i).astype(int)
+
+            # pick random values initially for Theta
+
+            dim = X_train_ij.shape[1]
+            theta_init_ij = np.random.rand(1,dim)
+            theta_ij = perform_gradient_descent(X_train_ij, theta_init_ij, alpha, Y_train_actual_ij, itr, threshold)
+
+            Theta[(i,j)] = theta_ij
 
     return Theta
     
@@ -303,26 +359,20 @@ if __name__ == '__main__':
     
     Matrix_dot = np.dot
 
-    # Note: There are 10 units which present the digits [1-9, 0]
-    # (in order) in the output layer.
-    inputs, labels = load_training_data()
-    ul = get_unique_labels(labels)
-    # train_ip, train_lb, test_ip, test_labels = 
+    
+    xtrain, xtest, ytrain, ytest = load_test_train_data()
+    
+    ul = get_unique_labels(ytrain)
 
-    # train the model from scratch and predict based on it
-    Theta = train(ul,inputs, labels, learningrate=0.1, iteration=200)
+    Theta = train(ul, xtrain, ytrain, learningrate=0.1, iteration=200)
 
-    outputs = predict_logistic_regression_multiclass_one_vs_one(inputs,Theta,ul,threshold=0.5)
+    print(Theta)
 
-    acc = accuracy_score(labels, outputs)
+    # outputs = predict_logistic_regression_multiclass_one_vs_one(xtest,Theta,ul,threshold=0.5)
 
-    correct_prediction = 0
-    for i, predict in enumerate(outputs):
-        if predict == labels[i]:
-            correct_prediction += 1
-    precision = float(correct_prediction) / len(labels)
-    print('accuracy: ',acc)
-    print('precision: {}'.format(precision))
+    # acc = accuracy_score(ytest, outputs)
+
+    # print('accuracy: ',acc)
 
 time = datetime.datetime.now()-a
 print("EXECUTION_TIME:",time)
