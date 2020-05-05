@@ -34,6 +34,74 @@ comm = MPI.COMM_WORLD
 Matrix_dot = np.dot
 
 Input_layer_size=400
+def compress(theta_grad):
+    
+    shape_theta = theta_grad.shape
+
+    #print("shape :", shape_theta)
+    loops = shape_theta[0]
+    itr = shape_theta[1]
+    reslist = []
+    
+    while(loops > 0):
+
+        res = 0
+        itr = shape_theta[1]
+        i = 0
+        while(itr > 0):
+            
+            x = int(theta_grad[loops-1][itr-1])
+            if(x == -1):
+                res =  res + 2 * pow(3,i)
+            elif(x == 0):
+                res =  res 
+            elif(x == 1):
+                res =  res + 1 * pow(3, i)
+            else :
+                print("Error in signSGD compression")
+                exit(0)
+
+            itr = itr - 1
+            i = i + 1
+
+        reslist.append(res)
+        loops = loops - 1
+
+    return shape_theta[1], reslist
+
+def decompress(t_c, l):
+    
+    t_len = len(t_c)
+    reslist = []
+    i = 0
+
+    while (i < t_len):
+
+        res = []
+        t = t_c[i]
+
+        while t:
+            t, r = divmod(t, 3)
+            if(r == 2):
+                res.append(-1)
+            else:
+                res.append(r)
+
+        lenlist = len(res)
+
+        if(lenlist != l):
+            dif = l - lenlist
+            while dif:
+                res.append(0)
+                dif = dif-1
+
+        res.reverse()
+        i = i+1
+        reslist.append(res)
+
+    reslist.reverse()
+    resnp = np.array(reslist)
+    return resnp
 
 def load_test_train_data(training_file='mnistdata.mat'):
     training_data = sio.loadmat(training_file)
@@ -74,9 +142,9 @@ def get_J_dash_theta(X, Theta, alpha, Y_actual, threshold):
     Y_pred[Y_pred < threshold] = 0
     Y_actual_minus_pred = np.subtract(Y_actual, Y_pred)  
     J_dash_theta = np.dot(Y_actual_minus_pred, X)  # or the direction that is the derivitive : 1 X d
-    
     J_dash_theta_sgn=np.sign(J_dash_theta)
-    return J_dash_theta_sgn
+    l1, J_dash_theta_cmp = compress(J_dash_theta_sgn)
+    return l1,J_dash_theta_cmp
     
 
 def perform_gradient_descent(X, Theta, alpha, Y_actual, itr, threshold):
@@ -137,7 +205,9 @@ def perform_gradient_descent(X, Theta, alpha, Y_actual, itr, threshold):
 
         
         #J_dash_theta = get_J_dash_theta(X, Theta, alpha, Y_actual, threshold)
-        J_dash_theta_grad=get_J_dash_theta(inputs_buf,Theta,alpha,labels_buf,threshold)
+        l1,J_dash_theta_c=get_J_dash_theta(inputs_buf,Theta,alpha,labels_buf,threshold)
+        J_dash_theta_grad = decompress(J_dash_theta_c, l1)
+
 
         comm.Barrier()
         J_dash_theta_buf = np.asarray([np.zeros_like(J_dash_theta_grad)] * comm.size)
@@ -242,9 +312,11 @@ def predict_logistic_regression_multiclass_one_vs_one(X_test, Theta, unique_labe
 def run(X_train, X_test, actuallabels_num_train):
 
     unique_labels = get_unique_labels(actuallabels_num_train)
-    #print("unique_labels : ",unique_labels)
+    print("Training..... : ")
 
     Theta = fit_logistic_regression_multiclass_one_vs_one(unique_labels = unique_labels, X = X_train, Y_label = actuallabels_num_train, alpha = 0.8, threshold = 0.5, itr=1000)
+    print("Predicting..... : ")
+
     pred_labels_num = predict_logistic_regression_multiclass_one_vs_one(X_test, Theta, unique_labels)
 
     return pred_labels_num
@@ -252,4 +324,4 @@ def run(X_train, X_test, actuallabels_num_train):
 xtrain, xtest, ytrain, ytest = load_test_train_data()
 op = run(xtrain, xtest, ytrain)
 
-print(accuracy_score(ytest, op))
+print("Accuracy is : ",accuracy_score(ytest, op))
