@@ -103,16 +103,6 @@ def decompress(t_c, l):
     resnp = np.array(reslist)
     return resnp
 
-# def load_test_train_data(training_file='mnistdata.mat'):
-#     training_data = sio.loadmat(training_file)
-
-
-#     inputs = training_data['X'].astype('f8')   
-#     labels = training_data['y'].reshape(training_data['y'].shape[0])
-#     xtrain, xtest, ytrain, ytest = train_test_split(inputs, labels, test_size=0.1)
-
-#     return (xtrain, xtest, ytrain, ytest)
-
 def randomize(X, Y):
     X = pd.DataFrame(X)
     Y = pd.DataFrame(Y)
@@ -133,12 +123,8 @@ def load_test_train_data(training_file='mnistdata.mat'):
     inputs = inputs.astype('f8')   
     labels = labels.reshape(training_data['y'].shape[0])
 
-    xtrain, xtest, ytrain, ytest = train_test_split(inputs, labels, test_size=0.1)
+    xtrain, xtest, ytrain, ytest = train_test_split(inputs, labels, test_size=0.1, stratify=labels)
 
-    # xtrain = convert_memory_ordering_f2c(xtrain)
-    # xtest = convert_memory_ordering_f2c(xtest)
-    # ytrain = convert_memory_ordering_f2c(ytrain)
-    # ytest = convert_memory_ordering_f2c(ytest)
     return (xtrain, xtest, ytrain, ytest, inputs, labels)
 
 def get_unique_labels(list1):
@@ -356,6 +342,6 @@ def run(X_train, X_test, actuallabels_num_train):
 
 xtrain, xtest, ytrain, ytest, X, Y = load_test_train_data()
 # print(xtrain.shape, xtest.shape, ytrain.shape, ytest.shape, X.shape, Y.shape)
-op = run(X, xtest, Y)
+op = run(xtrain, xtest, ytrain)
 
 print("Accuracy is : ",accuracy_score(ytest, op))
