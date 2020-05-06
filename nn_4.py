@@ -358,16 +358,16 @@ def gradient_descent(inputs, labels, learningrate=0.8, iteration=50):
             theta1_grad = decompress(theta1_grad_c, l1)
             theta2_grad = decompress(theta2_grad_c, l2)
             theta3_grad = decompress(theta3_grad_c, l3)
-
+#****
             # Gather distributed costs and gradients.
-            comm.Barrier()
-            cost_buf = [0] * comm.size
-            try:
-                cost_buf = comm.gather(cost)
-                cost = sum(cost_buf) / len(cost_buf)
-            except TypeError as e:
-                print('[{0}] {1}'.format(comm.rank, e))
-
+            # comm.Barrier()
+            # cost_buf = [0] * comm.size
+            # try:
+            #     cost_buf = comm.gather(cost)
+            #     cost = sum(cost_buf) / len(cost_buf)
+            # except TypeError as e:
+            #     print('[{0}] {1}'.format(comm.rank, e))
+#****
             theta1_grad_buf = np.asarray([np.zeros_like(theta1_grad)] * comm.size)
             comm.Barrier()
             if comm.rank == 0:
@@ -452,12 +452,8 @@ def predict(model, inputs):
 if __name__ == '__main__':
     
     Matrix_dot = np.dot
-
-    # Note: There are 10 units which present the digits [1-9, 0]
-    # (in order) in the output layer.
     xtrain, xtest, ytrain, ytest = load_test_train_data()
-
-    # train the model from scratch and predict based on it
+    # learningrate=0.05, iteration=100
     model = train(xtrain, ytrain, learningrate=0.05, iteration=100)
 
     outputs = predict(model, xtest)
